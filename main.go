@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/invopop/jsonschema"
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 )
@@ -32,7 +33,9 @@ func main() {
 		return scanner.Text(), true
 	}
 
-	tools := []ToolDefinition{}
+	tools := []ToolDefinition{
+		ReadFileDefinition,
+	}
 	agent := NewAgent(&client, getUserMessage, tools)
 	err := agent.Run(context.TODO())
 	if err != nil {
@@ -108,6 +111,7 @@ func NewAgent(
 	return &Agent{
 		client:         client,
 		getUserMessage: getUserMessage,
+		tools:          tools,
 	}
 }
 
@@ -115,6 +119,60 @@ type Agent struct {
 	client         *openai.Client
 	getUserMessage func() (string, bool)
 	tools          []ToolDefinition
+}
+
+var ReadFileDefinition = ToolDefinition{
+	Name:        "read_file",
+	Description: "Read the contents of a given relative file path. Use this when you want to see what's inside a file. Do not use this with directory names.",
+	Parameters:  GenerateSchema[ReadFileInput](),
+	Function:    ReadFile,
+}
+
+type ReadFileInput struct {
+	Path string `json:"path" jsonschema_description:"The relative path of a file in the working directory."`
+}
+
+func ReadFile(input json.RawMessage) (string, error) {
+	var readFileInput ReadFileInput
+	if err := json.Unmarshal(input, &readFileInput); err != nil {
+		return "", err
+	}
+
+	content, err := os.ReadFile(readFileInput.Path)
+	if err != nil {
+		return "", err
+	}
+
+	return string(content), nil
+}
+
+func GenerateSchema[T any]() JSONSchema {
+	reflector := jsonschema.Reflector{
+		AllowAdditionalProperties: false,
+		DoNotReference:            true,
+	}
+
+	var v T
+	schema := reflector.Reflect(v)
+
+	result := JSONSchema{
+		"type":                 "object",
+		"additionalProperties": false,
+	}
+
+	if schema.Properties != nil {
+		result["properties"] = schema.Properties
+	}
+
+	if len(schema.Required) > 0 {
+		result["required"] = schema.Required
+	}
+
+	if schema.Description != "" {
+		result["description"] = schema.Description
+	}
+
+	return result
 }
 
 type JSONSchema map[string]any
