@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 
@@ -31,7 +32,8 @@ func main() {
 		return scanner.Text(), true
 	}
 
-	agent := NewAgent(&client, getUserMessage)
+	tools := []ToolDefinition{}
+	agent := NewAgent(&client, getUserMessage, tools)
 	err := agent.Run(context.TODO())
 	if err != nil {
 		fmt.Printf("Error: %s\n", err.Error())
@@ -74,9 +76,22 @@ func (a *Agent) runInference(
 	ctx context.Context,
 	conversation []openai.ChatCompletionMessageParamUnion,
 ) (*openai.ChatCompletion, error) {
+	tools := []openai.ChatCompletionToolUnionParam{}
+
+	for _, tool := range a.tools {
+		tools = append(tools, openai.ChatCompletionFunctionTool(
+			openai.FunctionDefinitionParam{
+				Name:        tool.Name,
+				Description: openai.String(tool.Description),
+				Parameters:  openai.FunctionParameters(tool.Parameters),
+			},
+		))
+	}
+
 	resp, err := a.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
 		Model:     "qwen/qwen3.6-plus",
 		Messages:  conversation,
+		Tools:     tools,
 		MaxTokens: openai.Int(1024),
 	})
 	if err != nil {
@@ -85,7 +100,11 @@ func (a *Agent) runInference(
 	return resp, nil
 }
 
-func NewAgent(client *openai.Client, getUserMessage func() (string, bool)) *Agent {
+func NewAgent(
+	client *openai.Client,
+	getUserMessage func() (string, bool),
+	tools []ToolDefinition,
+) *Agent {
 	return &Agent{
 		client:         client,
 		getUserMessage: getUserMessage,
@@ -95,4 +114,14 @@ func NewAgent(client *openai.Client, getUserMessage func() (string, bool)) *Agen
 type Agent struct {
 	client         *openai.Client
 	getUserMessage func() (string, bool)
+	tools          []ToolDefinition
+}
+
+type JSONSchema map[string]any
+
+type ToolDefinition struct {
+	Name        string     `json:"name"`
+	Description string     `json:"description"`
+	Parameters  JSONSchema `json:"parameters"`
+	Function    func(input json.RawMessage) (string, error)
 }
