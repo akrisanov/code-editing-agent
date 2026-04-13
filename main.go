@@ -48,31 +48,83 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	fmt.Println("Chat with LLM (use 'ctrl-c' to quit)")
 
+	readUserInput := true
 	for {
-		fmt.Print("\u001b[94mYou\u001b[0m: ")
-		userInput, ok := a.getUserMessage()
-		if !ok {
-			break
+		if readUserInput {
+			fmt.Print("\u001b[94mYou\u001b[0m: ")
+			userInput, ok := a.getUserMessage()
+			if !ok {
+				break
+			}
+			conversation = append(conversation, openai.UserMessage(userInput))
 		}
-
-		conversation = append(conversation, openai.UserMessage(userInput))
 
 		message, err := a.runInference(ctx, conversation)
 		if err != nil {
 			return err
 		}
-
 		if len(message.Choices) == 0 {
 			return fmt.Errorf("model returned no choices")
 		}
 
-		assistantText := message.Choices[0].Message.Content
-		conversation = append(conversation, openai.AssistantMessage(assistantText))
+		msg := message.Choices[0].Message
 
-		fmt.Printf("\u001b[93mAssistant\u001b[0m: %s\n", assistantText)
+		conversation = append(conversation, msg.ToParam())
+
+		if msg.Content != "" {
+			fmt.Printf("\u001b[93mAssistant\u001b[0m: %s\n", msg.Content)
+		}
+
+		toolResults := []openai.ChatCompletionMessageParamUnion{}
+
+		for _, toolCall := range msg.ToolCalls {
+			if toolCall.Function.Name == "" {
+				continue
+			}
+
+			result := a.executeTool(
+				toolCall.ID,
+				toolCall.Function.Name,
+				json.RawMessage(toolCall.Function.Arguments),
+			)
+			toolResults = append(toolResults, result)
+		}
+
+		if len(toolResults) == 0 {
+			readUserInput = true
+			continue
+		}
+
+		readUserInput = false
+		conversation = append(conversation, toolResults...)
 	}
 
 	return nil
+}
+
+func (a *Agent) executeTool(id, name string, input json.RawMessage) openai.ChatCompletionMessageParamUnion {
+	var toolDef ToolDefinition
+	var found bool
+	for _, tool := range a.tools {
+		if tool.Name == name {
+			toolDef = tool
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		return openai.ToolMessage("tool not found", id)
+	}
+
+	fmt.Printf("\u001b[92mtool\u001b[0m: %s(%s)\n", name, input)
+
+	resp, err := toolDef.Function(input)
+	if err != nil {
+		return openai.ToolMessage("tool error "+err.Error(), id)
+	}
+
+	return openai.ToolMessage(resp, id)
 }
 
 func (a *Agent) runInference(
