@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/invopop/jsonschema"
 	"github.com/openai/openai-go/v3"
@@ -35,6 +37,7 @@ func main() {
 
 	tools := []ToolDefinition{
 		ReadFileDefinition,
+		ListFilesDefinition,
 	}
 	agent := NewAgent(&client, getUserMessage, tools)
 	err := agent.Run(context.TODO())
@@ -171,6 +174,71 @@ type Agent struct {
 	client         *openai.Client
 	getUserMessage func() (string, bool)
 	tools          []ToolDefinition
+}
+
+var ListFilesDefinition = ToolDefinition{
+	Name:        "list_files",
+	Description: "List files and directories at a given path. If no path is provided, list files in the current directory.",
+	Parameters:  GenerateSchema[ListFilesInput](),
+	Function:    ListFiles,
+}
+
+type ListFilesInput struct {
+	Path string `json:"path,omitempty" jsonschema_description:"Optional relative path to list files from. Defaults to the current directory if not provided."`
+}
+
+func ListFiles(input json.RawMessage) (string, error) {
+	var args ListFilesInput
+	if err := json.Unmarshal(input, &args); err != nil {
+		return "", err
+	}
+
+	dir := "."
+	if args.Path != "" {
+		if filepath.IsAbs(args.Path) {
+			return "", fmt.Errorf("absolute paths are not allowed")
+		}
+
+		clean := filepath.Clean(args.Path)
+		if clean == ".." || strings.HasPrefix(clean, "../") {
+			return "", fmt.Errorf("path escapes working directory")
+		}
+		dir = clean
+	}
+
+	var files []string
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		relPath, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+
+		if relPath == "." {
+			return nil
+		}
+
+		if info.IsDir() {
+			files = append(files, relPath+"/")
+		} else {
+			files = append(files, relPath)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+
+	result, err := json.Marshal(files)
+	if err != nil {
+		return "", err
+	}
+
+	return string(result), nil
 }
 
 var ReadFileDefinition = ToolDefinition{
