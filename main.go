@@ -38,6 +38,7 @@ func main() {
 	tools := []ToolDefinition{
 		ReadFileDefinition,
 		ListFilesDefinition,
+		EditFileDefinition,
 	}
 	agent := NewAgent(&client, getUserMessage, tools)
 	err := agent.Run(context.TODO())
@@ -264,6 +265,87 @@ func ReadFile(input json.RawMessage) (string, error) {
 	}
 
 	return string(content), nil
+}
+
+var EditFileDefinition = ToolDefinition{
+	Name: "edit_file",
+	Description: `Make edits to a text file.
+
+Replaces 'old_str' with 'new_str' in the given file. 'old_str' and 'new_str' MUST be different from each other.
+
+If the file specified with path doesn't exist, it will be created.
+`,
+	Parameters: GenerateSchema[EditFileInput](),
+	Function:   EditFile,
+}
+
+type EditFileInput struct {
+	Path   string `json:"path" jsonschema_description:"The path to the file"`
+	OldStr string `json:"old_str" jsonschema_description:"Text to search for - must match exactly and must only have one exact match"`
+	NewStr string `json:"new_str" jsonschema_description:"Text to replace old_str with"`
+}
+
+func EditFile(input json.RawMessage) (string, error) {
+	var editFileInput EditFileInput
+	if err := json.Unmarshal(input, &editFileInput); err != nil {
+		return "", err
+	}
+
+	if editFileInput.Path == "" {
+		return "", fmt.Errorf("path is required")
+	}
+	if editFileInput.OldStr == editFileInput.NewStr {
+		return "", fmt.Errorf("old_str and new_str must be different")
+	}
+
+	content, err := os.ReadFile(editFileInput.Path)
+	if err != nil {
+		if os.IsNotExist(err) && editFileInput.OldStr == "" {
+			return createNewFile(editFileInput.Path, editFileInput.NewStr)
+		}
+		return "", err
+	}
+
+	oldContent := string(content)
+
+	if editFileInput.OldStr == "" {
+		newContent := editFileInput.NewStr
+		if err := os.WriteFile(editFileInput.Path, []byte(newContent), 0644); err != nil {
+			return "", err
+		}
+		return "OK", nil
+	}
+
+	matchCount := strings.Count(oldContent, editFileInput.OldStr)
+	if matchCount == 0 {
+		return "", fmt.Errorf("old_str not found in file")
+	}
+	if matchCount > 1 {
+		return "", fmt.Errorf("old_str matches more than once in file")
+	}
+
+	newContent := strings.Replace(oldContent, editFileInput.OldStr, editFileInput.NewStr, 1)
+
+	if err := os.WriteFile(editFileInput.Path, []byte(newContent), 0644); err != nil {
+		return "", err
+	}
+
+	return "OK", nil
+}
+
+func createNewFile(filePath, content string) (string, error) {
+	dir := filepath.Dir(filePath)
+	if dir != "." {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return "", fmt.Errorf("failed to create directory: %w", err)
+		}
+	}
+
+	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+		return "", fmt.Errorf("failed to create file: %w", err)
+	}
+
+	return fmt.Sprintf("successfully created file %s", filePath), nil
 }
 
 func GenerateSchema[T any]() JSONSchema {
